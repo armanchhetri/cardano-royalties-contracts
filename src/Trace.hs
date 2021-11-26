@@ -21,6 +21,7 @@ import           PlutusTx.Prelude           hiding (Semigroup(..), unless)
 import           Prelude                    (Semigroup(..))
 import           Wallet.Emulator
 import           Delegate
+import           Sale
 
 assetSymbol :: CurrencySymbol
 assetSymbol = "f668"
@@ -52,7 +53,7 @@ myTrace = do
         pkh2 = pubKeyHash $ walletPubKey $ Wallet 2
         rp = RoyaltyParams
             {
-              rpNumToken      = 20
+              rpNumToken      = 50
             , rpPrice         = 100
             , rpSelfPercent   = 50
             , rpBeneficiaries = [(pkh1, 25), (pkh2, 25)]
@@ -72,10 +73,24 @@ myTrace = do
 
     void $ Emulator.waitNSlots 5
     callEndpoint @"update" h1 (r, 200)
-    
-    
 
-    void $ Emulator.waitNSlots 1
+    void $ Emulator.waitNSlots 2
+
+    let sp = SaleParams{
+        spSellingPrice = 300
+      , spRoyaltyRate  = 50
+      , spNumToken     = 50
+    }
+
+    h2 <- activateContractWallet (Wallet 2) $ putOnSale (r,sp)
+
+    void $ Emulator.waitNSlots 2
+
+    
+    s <- getSale h2
+
+    Extras.logInfo $ "The sale is " ++ show s
+    void $ Emulator.waitNSlots 5
 
     where
     getRoyalty :: ContractHandle (Last Royalty) BlockchainActions Text -> EmulatorTrace Royalty
@@ -87,4 +102,9 @@ myTrace = do
 
 
 
-
+    getSale :: ContractHandle (Last Sale) BlockchainActions Text -> EmulatorTrace Sale
+    getSale h = do
+      l <- observableState h
+      case l of
+           Last Nothing       -> Emulator.waitNSlots 1 >> getSale h
+           Last (Just sale) -> Extras.logInfo (show sale) >> return sale

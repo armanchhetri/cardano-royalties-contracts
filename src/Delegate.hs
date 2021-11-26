@@ -62,7 +62,7 @@ data DelegateDatum = DelegateDatum
 PlutusTx.makeLift ''DelegateDatum
 PlutusTx.unstableMakeIsData ''DelegateDatum
 
-data DelegateRedeemer = Update | Retrieve | Take  -- Take means MarketPlace wallet buys the token to put it for sale.
+data DelegateRedeemer = Update | Retrieve | Take Integer -- Take means MarketPlace wallet buys the token to put it for sale.
   deriving (Show, Generic, ToJSON, FromJSON)
 
 PlutusTx.unstableMakeIsData ''DelegateRedeemer
@@ -71,16 +71,27 @@ PlutusTx.makeLift ''DelegateRedeemer
 -- Main Validator
 mkDelegateValidator :: Royalty -> DelegateDatum -> DelegateRedeemer -> ScriptContext -> Bool
 mkDelegateValidator royalty ddt r ctx =
-  traceIfFalse "operator signature missing" (txSignedBy info $ rCreator royalty)
-    && case r of
-      Update   -> traceIfFalse "invalid output datum" validOutputDatum
-      Retrieve -> traceIfFalse "" True  -- Signature of creator is enough to retireve, It is just to make usecase trivial.
+    case r of
+      Update   -> traceIfFalse "invalid output datum" validOutputDatum                          &&
+                  traceIfFalse "tokens are not returned to script" tokenReturned                &&
+                  traceIfFalse "operator signature missing" (txSignedBy info $ rCreator royalty)
+
+      Retrieve -> traceIfFalse "operator signature missing" (txSignedBy info $ rCreator royalty)  
+
+      Take rpNumToken -> traceIfFalse "Creator not paid " creatorPaid
   where
     info :: TxInfo
     info = scriptContextTxInfo ctx
 
     validOutputDatum :: Bool
-    validOutputDatum = True
+    validOutputDatum = True  --TODO
+
+    tokenReturned :: Bool
+    tokenReturned = True  --TODO
+
+    creatorPaid :: Bool
+    creatorPaid = True  --TODO
+
 
 data Delegating
 
@@ -88,14 +99,14 @@ instance Scripts.ScriptType Delegating where
   type DatumType Delegating = DelegateDatum
   type RedeemerType Delegating = DelegateRedeemer
 
-{-# INLINEABLE royaltyTokenName #-}
+{-# INLINEABLE emptyTokenName #-}
 -- For token name of NFT
-royaltyTokenName :: TokenName
-royaltyTokenName = TokenName emptyByteString
+emptyTokenName :: TokenName
+emptyTokenName = TokenName emptyByteString
 
 {-# INLINEABLE royaltyAsset #-}
 royaltyAsset :: Royalty -> AssetClass
-royaltyAsset royalty = AssetClass (rNFT royalty, royaltyTokenName)
+royaltyAsset royalty = AssetClass (rNFT royalty, emptyTokenName)
 
 {-# INLINEABLE delegateDatum #-}
 
@@ -135,7 +146,7 @@ data RoyaltyParams = RoyaltyParams
 createRoyalty :: RoyaltyParams -> Contract (Last Royalty) BlockchainActions Text ()
 createRoyalty rp = do
   pkh <- pubKeyHash <$> Contract.ownPubKey
-  osc <- mapError (pack . show) (forgeContract pkh [(royaltyTokenName, 1)] :: Contract (Last Royalty) BlockchainActions CurrencyError OneShotCurrency)
+  osc <- mapError (pack . show) (forgeContract pkh [(emptyTokenName, 1)] :: Contract (Last Royalty) BlockchainActions CurrencyError OneShotCurrency)
   let cs = Currency.currencySymbol osc
       royalty =
         Royalty
