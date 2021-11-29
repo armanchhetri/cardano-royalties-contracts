@@ -57,12 +57,17 @@ PlutusTx.makeLift ''Royalty
 data DelegateDatum = DelegateDatum
   { costPrice :: !Integer --  Cost of Token set by creator for seller
   }
-  deriving (Eq, Show, Generic, ToJSON, FromJSON)
+  deriving (Show, Generic, ToJSON, FromJSON)
+
+instance Eq DelegateDatum where
+    {-# INLINABLE (==) #-}
+    a == b = (costPrice a == costPrice b)
+
 
 PlutusTx.makeLift ''DelegateDatum
 PlutusTx.unstableMakeIsData ''DelegateDatum
 
-data DelegateRedeemer = Update | Retrieve | Take Integer -- Take means MarketPlace wallet buys the token to put it for sale.
+data DelegateRedeemer = Update | Retrieve Integer | Take Integer -- Take means MarketPlace wallet buys the token to put it for sale.
   deriving (Show, Generic, ToJSON, FromJSON)
 
 PlutusTx.unstableMakeIsData ''DelegateRedeemer
@@ -71,26 +76,80 @@ PlutusTx.makeLift ''DelegateRedeemer
 -- Main Validator
 mkDelegateValidator :: Royalty -> DelegateDatum -> DelegateRedeemer -> ScriptContext -> Bool
 mkDelegateValidator royalty ddt r ctx =
-    case r of
-      Update   -> traceIfFalse "invalid output datum" validOutputDatum                          &&
-                  traceIfFalse "tokens are not returned to script" tokenReturned                &&
-                  traceIfFalse "operator signature missing" (txSignedBy info $ rCreator royalty)
+  traceIfFalse "NFT missing from input"  inputHasNFT  &&
+  case r of
+    Update   -> traceIfFalse "Creator signature missing" (txSignedBy info $ rCreator royalty) &&
+                traceIfFalse "NFT missing from output"  outputHasNFT 
 
-      Retrieve -> traceIfFalse "operator signature missing" (txSignedBy info $ rCreator royalty)  
+    Retrieve nToken -> traceIfFalse "operator signature missing" (txSignedBy info $ rCreator royalty) &&
+                       traceIfFalse "NFT missing from output"  (outputHasNFT' nToken)
+    Take nToken ->  True --validateTake nToken 
 
-      Take rpNumToken -> traceIfFalse "Creator not paid " creatorPaid
   where
     info :: TxInfo
     info = scriptContextTxInfo ctx
 
+    ownInput :: TxOut
+    ownInput = case findOwnInput ctx of
+      Nothing -> traceError "Input missing"
+      Just i  -> txInInfoResolved i 
+
+    inputHasNFT :: Bool 
+    inputHasNFT = assetClassValueOf (txOutValue ownInput) (royaltyAsset royalty) == 1
+
+    ownOutput :: TxOut
+    ownOutput  = case getContinuingOutputs ctx of
+        [o] -> o
+        _   -> traceError "expected exactly one royalty output"
+
+    numOfInToken :: Integer
+    numOfInToken = assetClassValueOf (txOutValue ownInput) (rToken royalty)
+
+    outputHasNFT :: Bool
+    outputHasNFT = assetClassValueOf (txOutValue ownOutput) (royaltyAsset royalty) == 1
+
+    outputHasNFT' :: Integer -> Bool
+    outputHasNFT' nToken =  if numOfInToken == nToken then True else assetClassValueOf (txOutValue ownOutput) (royaltyAsset royalty) == 1
+
+
+    outputDatum :: Maybe DelegateDatum
+    outputDatum = delegateDatum ownOutput (`findDatum` info)
+
     validOutputDatum :: Bool
-    validOutputDatum = True  --TODO
+    validOutputDatum =  outputDatum == Just ddt
 
-    tokenReturned :: Bool
-    tokenReturned = True  --TODO
+    nftPlusAda :: Integer -> Value 
+    nftPlusAda nToken = assetClassValue (royaltyAsset royalty) 1 <> Ada.lovelaceValueOf (nToken * (costPrice ddt))
 
-    creatorPaid :: Bool
-    creatorPaid = True  --TODO
+    validateTake :: Integer -> Bool
+    validateTake nToken 
+      | numOfInToken == nToken = traceError "Creator did not get both token and cost price" (getsValue (rCreator royalty) $ nftPlusAda nToken)
+      -- | otherwise = traceError "Creator not paid" (getsValue (rCreator royalty) $ Ada.lovelaceValueOf (nToken * (costPrice ddt))) &&
+      | otherwise = traceError "Creator not paid" (lovelacePaidTo (rCreator royalty) (nToken * (costPrice ddt))) &&
+                    traceError "The datum is not valid" validOutputDatum  && 
+                    traceError "The NFT is missing from output" outputHasNFT 
+                    
+                    -- traceError "Creator not paid" (getsValue (rCreator royalty) $ nftPlusAda 0)
+
+
+    lovelacePaidTo :: PubKeyHash -> Integer -> Bool
+    lovelacePaidTo pkh amt =
+      let
+        pkhValue :: Integer
+        pkhValue = lovelaces (valuePaidTo info pkh)
+      in
+        pkhValue >= amt
+
+    getsValue :: PubKeyHash -> Value -> Bool
+    getsValue h v =
+      let
+        [o] = [ o'
+              | o' <- txInfoOutputs info
+              , txOutValue o' == v
+              ]
+      in
+        txOutAddress o == pubKeyHashAddress h
+
 
 
 data Delegating
@@ -98,6 +157,13 @@ data Delegating
 instance Scripts.ScriptType Delegating where
   type DatumType Delegating = DelegateDatum
   type RedeemerType Delegating = DelegateRedeemer
+
+
+{-# INLINABLE lovelaces #-}
+lovelaces :: Value -> Integer
+lovelaces = Ada.getLovelace . Ada.fromValue
+
+
 
 {-# INLINEABLE emptyTokenName #-}
 -- For token name of NFT
@@ -210,22 +276,9 @@ updateRoyalty royalty cp' = do
 
 type DelegateSchema =
   BlockchainActions .\/
-  Endpoint "update" (Royalty, Integer)
-  -- Endpoint "test"   ()
+  Endpoint "update"   (Royalty, Integer) .\/
+  Endpoint "retrieve" (Royalty, Integer)
 
 
 
-
-
-endpoints :: Contract () DelegateSchema Text ()
-endpoints = (update) >> endpoints
-  where
-    -- create = endpoint @"create" >>= createRoyalty
-
-    -- test = endpoint @"test" >> myContract4
-
-    update :: Contract () DelegateSchema Text ()
-    update = do
-      (royalty, cp') <- endpoint @"update"
-      updateRoyalty royalty cp'
 

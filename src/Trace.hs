@@ -37,7 +37,7 @@ test = runEmulatorTraceIO' def emCfg myTrace
     emCfg = EmulatorConfig $ Left $ Map.fromList [(Wallet 1, v1), (Wallet 2, v2), (Wallet 3, v3)]
 
     v1 :: Value
-    v1 = Ada.lovelaceValueOf 1_000_000 <> Value.singleton assetSymbol assetToken 500
+    v1 = Ada.lovelaceValueOf 40 <> Value.singleton assetSymbol assetToken 500
 
     v2 :: Value
     v2 = Ada.lovelaceValueOf 1_000_000 
@@ -61,6 +61,8 @@ myTrace = do
             , rpDeadline      = 20
             }
 
+    
+
     h1 <- activateContractWallet (Wallet 1) $ createRoyalty rp
     
     void $ Emulator.waitNSlots 2
@@ -68,11 +70,10 @@ myTrace = do
     r <- getRoyalty h1
     Extras.logInfo $ "The royalty is " ++ show r
 
-    h1 <- activateContractWallet (Wallet 1) endpoints
-
+    h1' <- activateContractWallet (Wallet 1) endpoints
 
     void $ Emulator.waitNSlots 5
-    callEndpoint @"update" h1 (r, 200)
+    -- callEndpoint @"update" h1' (r, 200)
 
     void $ Emulator.waitNSlots 2
 
@@ -85,12 +86,34 @@ myTrace = do
     h2 <- activateContractWallet (Wallet 2) $ putOnSale (r,sp)
 
     void $ Emulator.waitNSlots 2
+    h2' <- activateContractWallet (Wallet 2) endpoints
+    
+    h3 <- activateContractWallet (Wallet 3) endpoints
+
+
 
     
     s <- getSale h2
 
     Extras.logInfo $ "The sale is " ++ show s
+
+
     void $ Emulator.waitNSlots 5
+
+    -- Extras.logInfo @String $ "Calling updateSale endpoint" 
+    
+    -- callEndpoint @"updateSale" h2' ((r,s), 400)
+
+
+
+    -- void $ Emulator.waitNSlots 2
+    -- callEndpoint @"retrieveSale" h2' ((r,s), 30)
+    callEndpoint @"buy" h3 ((r,s), 30)
+
+    -- void $ Emulator.waitNSlots 2
+    -- callEndpoint @"buy" h3 ((r,s), 5)
+    void $ Emulator.waitNSlots 5
+
 
     where
     getRoyalty :: ContractHandle (Last Royalty) BlockchainActions Text -> EmulatorTrace Royalty
