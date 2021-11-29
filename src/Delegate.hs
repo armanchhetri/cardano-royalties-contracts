@@ -227,7 +227,7 @@ createRoyalty rp = do
       ledgerTx <- submitTxConstraints (delegateInst royalty) tx
 
       awaitTxConfirmed $ txId ledgerTx
-      logInfo @String $ show (rpToken rp) ++ " token kept in market place for trade"
+      logInfo @String $ show (rpNumToken rp) ++ " Tokens [" ++ show (rpToken rp) ++ "] delegated in market place for trade"
     _-> throwError "Invalid royalty distribution"
 
   where
@@ -272,7 +272,7 @@ updateRoyalty royalty cp' = do
 
       ledgerTx <- submitTxConstraintsWith @Delegating lookups tx
       awaitTxConfirmed $ txId ledgerTx
-      logInfo @String $ "updated cost price to " ++ show cp'
+      logInfo @String $ "Updated cost price of Token [" ++ show (rToken royalty) ++ "] to "++ show cp'
 
 
 retrieve :: 
@@ -310,8 +310,8 @@ retrieve royalty num = do
 
 type DelegateSchema =
   BlockchainActions .\/
-  Endpoint "update"   (Royalty, Integer) .\/
-  Endpoint "retrieve" (Royalty, Integer)
+  Endpoint "update"   Integer .\/ -- Price
+  Endpoint "retrieve" Integer     -- Num of token
 
 
 

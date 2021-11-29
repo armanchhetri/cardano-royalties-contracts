@@ -37,7 +37,7 @@ library
   exposed-modules:     Trace
                      , Funds
                      , Delegate
-                    --  , Sale 
+                     , Sale 
                      , Token 
 
   build-depends:       aeson

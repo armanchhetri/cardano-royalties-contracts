@@ -367,44 +367,44 @@ retrieveSale (royalty, sale) num = do
 
 
 
-type TotalSchema =
-  DelegateSchema .\/
-  Endpoint "updateSale"  ((Royalty, Sale),Integer) .\/
-  Endpoint "retrieveSale"((Royalty, Sale),Integer) .\/
-  Endpoint "buy"         ((Royalty, Sale),Integer)
+type SaleSchema =
+  BlockchainActions .\/
+  Endpoint "updateSale"   Integer .\/ -- Integer is price
+  Endpoint "retrieveSale" Integer .\/ -- Integer is num of token
+  Endpoint "buy"          Integer     -- Integer is num of token
 
 
 dEndpoints :: Royalty -> Contract () DelegateSchema Text ()
-dEndpoints royalty = (update `select` retrieve') dEndpoints royalty
+dEndpoints royalty = (update `select` retrieve') >> dEndpoints royalty
   where
-    update :: Contract () TotalSchema Text ()
+    update :: Contract () DelegateSchema Text ()
     update = do
-      (royalty, cp') <- endpoint @"update"
+      cp' <- endpoint @"update"
       updateRoyalty royalty cp'
 
-    retrieve' :: Contract () TotalSchema Text ()
+    retrieve' :: Contract () DelegateSchema Text ()
     retrieve' = do
-      (royalty, num) <- endpoint @"retrieve"
+      num <- endpoint @"retrieve"
       retrieve royalty num 
 
 
-sEndpoints :: (Royalty, Sale) -> Contract () TotalSchema Text ()
+sEndpoints :: (Royalty, Sale) -> Contract () SaleSchema Text ()
 sEndpoints (royalty, sale)= (updateSale' `select` buy' `select` retrieveSale') >> sEndpoints (royalty, sale)
   where
-    updateSale' :: Contract () TotalSchema Text ()
+    updateSale' :: Contract () SaleSchema Text ()
     updateSale' = do
-      ((royalty, sale), sp') <- endpoint @"updateSale"
+      sp' <- endpoint @"updateSale"
       updateSale (royalty, sale) sp'
 
-    buy' :: Contract () TotalSchema Text ()
+    buy' :: Contract () SaleSchema Text ()
     buy' = do
-      ((royalty, sale), num) <- endpoint @"buy"
+      num <- endpoint @"buy"
       buy (royalty, sale) num
 
 
-    retrieveSale' :: Contract () TotalSchema Text ()
+    retrieveSale' :: Contract () SaleSchema Text ()
     retrieveSale' = do
-      ((royalty, sale), num) <- endpoint @"retrieveSale"
+      num <- endpoint @"retrieveSale"
       retrieveSale (royalty, sale) num
 
 

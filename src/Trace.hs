@@ -20,6 +20,7 @@ import           Plutus.Trace.Emulator      as Emulator
 import           PlutusTx.Prelude           hiding (Semigroup(..), unless)
 import           Prelude                    (Semigroup(..))
 import           Wallet.Emulator
+
 import           Delegate
 import           Sale
 
@@ -37,7 +38,7 @@ test = runEmulatorTraceIO' def emCfg myTrace
     emCfg = EmulatorConfig $ Left $ Map.fromList [(Wallet 1, v1), (Wallet 2, v2), (Wallet 3, v3)]
 
     v1 :: Value
-    v1 = Ada.lovelaceValueOf 40 <> Value.singleton assetSymbol assetToken 500
+    v1 = Ada.lovelaceValueOf 1_000_000 <> Value.singleton assetSymbol assetToken 500
 
     v2 :: Value
     v2 = Ada.lovelaceValueOf 1_000_000
@@ -49,11 +50,10 @@ test = runEmulatorTraceIO' def emCfg myTrace
 myTrace :: EmulatorTrace ()
 myTrace = do
     let rpTok = AssetClass (assetSymbol, assetToken)
-        pkh1 = pubKeyHash $ walletPubKey $ Wallet 1
         pkh2 = pubKeyHash $ walletPubKey $ Wallet 2
         rp = RoyaltyParams
             {
-              rpNumToken      = 50
+              rpNumToken      = 150
             , rpPrice         = 100
             , rpSelfPercent   = 50
             , rpBeneficiaries = [(pkh2, 50)]
@@ -68,48 +68,46 @@ myTrace = do
     r <- getRoyalty h1
     Extras.logInfo $ "The royalty is " ++ show r
 
-    h1' <- activateContractWallet (Wallet 1) endpoints
+    h1' <- activateContractWallet (Wallet 1) $ dEndpoints r
 
     void $ Emulator.waitNSlots 5
-    -- callEndpoint @"update" h1' (r, 200)
+    callEndpoint @"update" h1' 200
+
+    void $ Emulator.waitNSlots 5
+    callEndpoint @"retrieve" h1' 50
+
 
     void $ Emulator.waitNSlots 2
 
     let sp = SaleParams{
         spSellingPrice = 300
       , spRoyaltyRate  = 50
-      , spNumToken     = 20
+      , spNumToken     = 40
     }
 
     h2 <- activateContractWallet (Wallet 2) $ putOnSale (r,sp)
 
     void $ Emulator.waitNSlots 2
-    h2' <- activateContractWallet (Wallet 2) endpoints
-    
-    h3 <- activateContractWallet (Wallet 3) endpoints
-
-
-
-    callEndpoint @"retrieve" h1' (r, 10)
     s <- getSale h2
-
     Extras.logInfo $ "The sale is " ++ show s
 
-
-    void $ Emulator.waitNSlots 5
-
-    -- Extras.logInfo @String $ "Calling updateSale endpoint" 
+    h2' <- activateContractWallet (Wallet 2) $ sEndpoints (r,s)
     
-    -- callEndpoint @"updateSale" h2' ((r,s), 400)
+    h3 <- activateContractWallet (Wallet 3) $ sEndpoints (r,s)
+
+    void $ Emulator.waitNSlots 2
+
+    callEndpoint @"updateSale" h2' 200
+
+    void $ Emulator.waitNSlots 2
+
+    callEndpoint @"retrieveSale" h2' 10
+
+    void $ Emulator.waitNSlots 2
+
+    callEndpoint @"buy" h3 20
 
 
-
-    -- void $ Emulator.waitNSlots 2
-    -- callEndpoint @"retrieveSale" h2' ((r,s), 30)
-    -- callEndpoint @"buy" h3 ((r,s), 50)
-
-    -- void $ Emulator.waitNSlots 2
-    -- callEndpoint @"buy" h3 ((r,s), 5)
     void $ Emulator.waitNSlots 5
 
 

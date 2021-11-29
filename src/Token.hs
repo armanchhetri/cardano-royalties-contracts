@@ -65,8 +65,6 @@ mint mp = do
     Contract.logInfo @String $ printf "forged %s" (show val)
 
 
-
-
 -- endpoints :: Contract () SignedSchema Text ()
 -- endpoints = mint' >> endpoints
 --   where
