@@ -61,7 +61,7 @@ newtype SaleDatum = SaleDatum {salePrice :: Integer}
 PlutusTx.makeLift ''SaleDatum
 PlutusTx.unstableMakeIsData ''SaleDatum
 
-data SaleRedeemer = Buy Integer | UpdateSale | RetrieveSale 
+data SaleRedeemer = Buy Integer | UpdateSale | RetrieveSale Integer
   deriving (Show, Generic, ToJSON, FromJSON)
 
 PlutusTx.unstableMakeIsData ''SaleRedeemer
@@ -94,10 +94,14 @@ saleDatum o f = do
 {-# INLINABLE mkSaleValidator #-}
 mkSaleValidator :: Royalty -> Sale -> SaleDatum -> SaleRedeemer -> ScriptContext -> Bool
 mkSaleValidator royalty sale SaleDatum{..} r ctx =
+  traceIfFalse "NFT missing from input"  inputHasNFT  &&
   case r of
-      UpdateSale  -> traceIfFalse "No authorized signature found" authenticateSeller
+      UpdateSale  -> traceIfFalse "No authorized signature found" authenticateSeller &&
+                     traceIfFalse "NFT missing from sale output"  outputHasNFT 
+                    
 
-      RetrieveSale  -> traceIfFalse "No authorized signature found" authenticateSeller
+      RetrieveSale nToken  -> traceIfFalse "No authorized signature found" authenticateSeller &&
+                              traceIfFalse "NFT missing from output"  (outputHasNFT' nToken)
 
       Buy nToken -> traceIfFalse "Seller Not paid yet"     (sellerPaid nToken) &&
                       traceIfFalse "Royalty not distributed" (royaltyDistributed nToken)
@@ -106,6 +110,33 @@ mkSaleValidator royalty sale SaleDatum{..} r ctx =
   where
     info :: TxInfo
     info = scriptContextTxInfo ctx
+
+    ownInput :: TxOut
+    ownInput = case findOwnInput ctx of
+      Nothing -> traceError "Input missing"
+      Just i  -> txInInfoResolved i 
+
+    inputHasNFT :: Bool 
+    inputHasNFT = assetClassValueOf (txOutValue $  ownInput) (saleAsset sale) == 1
+
+    ownOutput :: TxOut
+    ownOutput  = case getContinuingOutputs ctx of
+        [o] -> o
+        _   -> traceError "expected exactly one royalty output"
+
+
+    -- Exactly one value of NFT
+    outputHasNFT :: Bool
+    outputHasNFT = assetClassValueOf (txOutValue ownOutput) (saleAsset sale) == 1
+
+    -- number of token from input utxo
+    numOfInToken :: Integer
+    numOfInToken = available ownInput royalty
+
+    -- condition of nft returned for Retrieve Sale
+    outputHasNFT' :: Integer -> Bool
+    outputHasNFT' nToken =  numOfInToken == nToken || assetClassValueOf (txOutValue ownOutput) (saleAsset sale) == 1
+
 
     authenticateSeller :: Bool
     authenticateSeller = txSignedBy info (sSeller sale)
@@ -164,9 +195,6 @@ data SaleParams = SaleParams {
     }
 
 
-available :: TxOutTx ->Royalty -> Integer
-available o royalty = assetClassValueOf (txOutValue $ txOutTxOut o) (rToken royalty)
-
 
 putOnSale ::
   forall s. HasBlockchainActions s =>
@@ -177,7 +205,7 @@ putOnSale (royalty, sp) = do
   case m of
     Nothing -> throwError "Royalty not found"
 
-    Just (oref, o, ddt@DelegateDatum{..}) | (available o royalty) >= spNumToken sp -> do
+    Just (oref, o, ddt@DelegateDatum{..}) | (available (txOutTxOut o) royalty) >= spNumToken sp -> do
 
       pkh <- pubKeyHash <$> Contract.ownPubKey
       osc <- mapError (pack . show) (forgeContract pkh [(emptyTokenName, 1)] :: Contract (Last Sale) s CurrencyError OneShotCurrency)
@@ -188,12 +216,9 @@ putOnSale (royalty, sp) = do
               sRoyaltyRate = spRoyaltyRate sp,
               sNFT         = cs
           }
-        toReturn = available o royalty - spNumToken sp
-        -- val1 = assetClassValue (rToken royalty) toReturn <> assetClassValue (royaltyAsset royalty) 1 -- For the delegate script
-        -- val3 = Ada.lovelaceValueOf (spNumToken sp * costPrice )
+        toReturn = available (txOutTxOut o) royalty - spNumToken sp
 
-        -- val1: For Delegate script, val2: For creator
-        (val1, val3) = if available o royalty == spNumToken sp then
+        (val1, val3) = if available (txOutTxOut o) royalty == spNumToken sp then
                         (token, ada <> nft)          else
                         (token <> nft , ada)
                         where
@@ -204,16 +229,18 @@ putOnSale (royalty, sp) = do
         val2 = assetClassValue (rToken royalty) (spNumToken sp) <> assetClassValue (AssetClass (cs, emptyTokenName)) 1 -- For Sale script
 
 
-        lookups = Constraints.otherScript (saleValidator royalty sale) <>
-                  Constraints.otherScript (delegateValidator royalty)  <>
-                  Constraints.unspentOutputs ( Map.singleton oref o)
+        lookups = Constraints.unspentOutputs ( Map.singleton oref o)   <>
+                  Constraints.otherScript (saleValidator royalty sale) <>
+                  Constraints.otherScript (delegateValidator royalty) 
+                  
 
-        tx      = Constraints.mustSpendScriptOutput oref  (Redeemer $ PlutusTx.toData (Take (spNumToken sp))) <>
+        tx      = Constraints.mustPayToPubKey (rCreator royalty) val3 <>
                   Constraints.mustPayToOtherScript (validatorHash $ saleValidator royalty sale)
                       (Datum $ PlutusTx.toData $ SaleDatum $ spSellingPrice sp) val2                          <>
                   Constraints.mustPayToOtherScript (validatorHash $ delegateValidator royalty)
-                      (Datum $ PlutusTx.toData $ SaleDatum $ spSellingPrice sp)    val1                       <>
-                  Constraints.mustPayToPubKey (rCreator royalty) val3
+                      (Datum $ PlutusTx.toData ddt) val1 <>
+                  Constraints.mustSpendScriptOutput oref  (Redeemer $ PlutusTx.toData (Take (spNumToken sp)))                  
+                  
       tell $ Last $ Just sale
       ledgerTx <- submitTxConstraintsWith @Selling lookups tx
       awaitTxConfirmed $ txId ledgerTx
@@ -272,11 +299,11 @@ buy (royalty, sale) num = do
   case m of
     Nothing -> do
       throwError "No sale found for buy"
-    Just (oref, o, dt@SaleDatum{..}) |  (available o royalty) >= num && (salePrice > sRoyaltyRate sale) -> do
+    Just (oref, o, dt@SaleDatum{..}) |  (available (txOutTxOut o) royalty) >= num && (salePrice > sRoyaltyRate sale) -> do
       let
         price        = salePrice * num
         totalRoyalty = (sRoyaltyRate sale) * num
-        av = available o royalty
+        av = available (txOutTxOut o) royalty
 
         (valSlr, valScr) = if av == num       then
                           (ada <> nft, token) else
@@ -314,10 +341,10 @@ retrieveSale (royalty, sale) num = do
   case m of
     Nothing -> do
       throwError "No sale found to retrieve"
-    Just (oref, o, dt) |  (available o royalty) >= num -> do
+    Just (oref, o, dt) |  (available (txOutTxOut o) royalty) >= num -> do
       let
         
-        av = available o royalty
+        av = available (txOutTxOut o) royalty
         valScr = assetClassValue (rToken royalty) (av-num) <> assetClassValue (saleAsset sale) 1
        
 
@@ -325,7 +352,7 @@ retrieveSale (royalty, sale) num = do
                   Constraints.scriptInstanceLookups (saleInst royalty sale) <>
                   Constraints.otherScript (saleValidator royalty sale)
 
-        tx      = Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toData (RetrieveSale)) <>
+        tx      = Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toData (RetrieveSale num)) <>
                   if av /= num then 
                     Constraints.mustPayToOtherScript (validatorHash $ saleValidator royalty sale)
                     (Datum $ PlutusTx.toData dt) valScr  else
@@ -347,15 +374,23 @@ type TotalSchema =
   Endpoint "buy"         ((Royalty, Sale),Integer)
 
 
-endpoints :: Contract () TotalSchema Text ()
-endpoints = (update `select` updateSale' `select` buy' `select` retrieveSale') >> endpoints
+dEndpoints :: Royalty -> Contract () DelegateSchema Text ()
+dEndpoints royalty = (update `select` retrieve') dEndpoints royalty
   where
-
     update :: Contract () TotalSchema Text ()
     update = do
       (royalty, cp') <- endpoint @"update"
       updateRoyalty royalty cp'
 
+    retrieve' :: Contract () TotalSchema Text ()
+    retrieve' = do
+      (royalty, num) <- endpoint @"retrieve"
+      retrieve royalty num 
+
+
+sEndpoints :: (Royalty, Sale) -> Contract () TotalSchema Text ()
+sEndpoints (royalty, sale)= (updateSale' `select` buy' `select` retrieveSale') >> sEndpoints (royalty, sale)
+  where
     updateSale' :: Contract () TotalSchema Text ()
     updateSale' = do
       ((royalty, sale), sp') <- endpoint @"updateSale"
@@ -371,6 +406,8 @@ endpoints = (update `select` updateSale' `select` buy' `select` retrieveSale') >
     retrieveSale' = do
       ((royalty, sale), num) <- endpoint @"retrieveSale"
       retrieveSale (royalty, sale) num
+
+
 
 
 

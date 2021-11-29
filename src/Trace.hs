@@ -40,7 +40,7 @@ test = runEmulatorTraceIO' def emCfg myTrace
     v1 = Ada.lovelaceValueOf 40 <> Value.singleton assetSymbol assetToken 500
 
     v2 :: Value
-    v2 = Ada.lovelaceValueOf 1_000_000 
+    v2 = Ada.lovelaceValueOf 1_000_000
 
     v3 :: Value
     v3 = Ada.lovelaceValueOf 1_000_000
@@ -56,12 +56,10 @@ myTrace = do
               rpNumToken      = 50
             , rpPrice         = 100
             , rpSelfPercent   = 50
-            , rpBeneficiaries = [(pkh1, 25), (pkh2, 25)]
+            , rpBeneficiaries = [(pkh2, 50)]
             , rpToken         = rpTok                
             , rpDeadline      = 20
             }
-
-    
 
     h1 <- activateContractWallet (Wallet 1) $ createRoyalty rp
     
@@ -80,7 +78,7 @@ myTrace = do
     let sp = SaleParams{
         spSellingPrice = 300
       , spRoyaltyRate  = 50
-      , spNumToken     = 50
+      , spNumToken     = 20
     }
 
     h2 <- activateContractWallet (Wallet 2) $ putOnSale (r,sp)
@@ -92,7 +90,7 @@ myTrace = do
 
 
 
-    
+    callEndpoint @"retrieve" h1' (r, 10)
     s <- getSale h2
 
     Extras.logInfo $ "The sale is " ++ show s
@@ -108,7 +106,7 @@ myTrace = do
 
     -- void $ Emulator.waitNSlots 2
     -- callEndpoint @"retrieveSale" h2' ((r,s), 30)
-    callEndpoint @"buy" h3 ((r,s), 30)
+    -- callEndpoint @"buy" h3 ((r,s), 50)
 
     -- void $ Emulator.waitNSlots 2
     -- callEndpoint @"buy" h3 ((r,s), 5)

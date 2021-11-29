@@ -83,7 +83,7 @@ mkDelegateValidator royalty ddt r ctx =
 
     Retrieve nToken -> traceIfFalse "operator signature missing" (txSignedBy info $ rCreator royalty) &&
                        traceIfFalse "NFT missing from output"  (outputHasNFT' nToken)
-    Take nToken ->  True --validateTake nToken 
+    Take nToken ->  validateTake nToken 
 
   where
     info :: TxInfo
@@ -95,61 +95,47 @@ mkDelegateValidator royalty ddt r ctx =
       Just i  -> txInInfoResolved i 
 
     inputHasNFT :: Bool 
-    inputHasNFT = assetClassValueOf (txOutValue ownInput) (royaltyAsset royalty) == 1
+    inputHasNFT = assetClassValueOf (txOutValue $  ownInput) (royaltyAsset royalty) == 1
 
     ownOutput :: TxOut
     ownOutput  = case getContinuingOutputs ctx of
         [o] -> o
         _   -> traceError "expected exactly one royalty output"
 
+    -- number of token from input utxo
     numOfInToken :: Integer
-    numOfInToken = assetClassValueOf (txOutValue ownInput) (rToken royalty)
+    numOfInToken = available ownInput royalty
 
+    -- Exactly one value of NFT
     outputHasNFT :: Bool
     outputHasNFT = assetClassValueOf (txOutValue ownOutput) (royaltyAsset royalty) == 1
 
+    -- condition of nft returned for Retrieve
     outputHasNFT' :: Integer -> Bool
-    outputHasNFT' nToken =  if numOfInToken == nToken then True else assetClassValueOf (txOutValue ownOutput) (royaltyAsset royalty) == 1
+    outputHasNFT' nToken =  numOfInToken == nToken || assetClassValueOf (txOutValue ownOutput) (royaltyAsset royalty) == 1
 
 
     outputDatum :: Maybe DelegateDatum
     outputDatum = delegateDatum ownOutput (`findDatum` info)
 
     validOutputDatum :: Bool
-    validOutputDatum =  outputDatum == Just ddt
+    validOutputDatum = outputDatum == Just ddt
 
     nftPlusAda :: Integer -> Value 
     nftPlusAda nToken = assetClassValue (royaltyAsset royalty) 1 <> Ada.lovelaceValueOf (nToken * (costPrice ddt))
 
+    adaOnly :: Integer -> Value 
+    adaOnly nToken = Ada.lovelaceValueOf (nToken * (costPrice ddt))
+
     validateTake :: Integer -> Bool
     validateTake nToken 
-      | numOfInToken == nToken = traceError "Creator did not get both token and cost price" (getsValue (rCreator royalty) $ nftPlusAda nToken)
-      -- | otherwise = traceError "Creator not paid" (getsValue (rCreator royalty) $ Ada.lovelaceValueOf (nToken * (costPrice ddt))) &&
-      | otherwise = traceError "Creator not paid" (lovelacePaidTo (rCreator royalty) (nToken * (costPrice ddt))) &&
-                    traceError "The datum is not valid" validOutputDatum  && 
-                    traceError "The NFT is missing from output" outputHasNFT 
-                    
-                    -- traceError "Creator not paid" (getsValue (rCreator royalty) $ nftPlusAda 0)
-
-
-    lovelacePaidTo :: PubKeyHash -> Integer -> Bool
-    lovelacePaidTo pkh amt =
-      let
-        pkhValue :: Integer
-        pkhValue = lovelaces (valuePaidTo info pkh)
-      in
-        pkhValue >= amt
-
+      | numOfInToken == nToken = traceIfFalse "Creator did not get both token and cost price" (getsValue (rCreator royalty) $ nftPlusAda nToken)
+      | otherwise = traceIfFalse "Creator not paid" (getsValue (rCreator royalty) (adaOnly nToken)) &&
+                    traceIfFalse "The datum is not valid" validOutputDatum  && 
+                    traceIfFalse "The NFT is missing from output" outputHasNFT 
+                   
     getsValue :: PubKeyHash -> Value -> Bool
-    getsValue h v =
-      let
-        [o] = [ o'
-              | o' <- txInfoOutputs info
-              , txOutValue o' == v
-              ]
-      in
-        txOutAddress o == pubKeyHashAddress h
-
+    getsValue pkh v = (valuePaidTo info pkh )== v
 
 
 data Delegating
@@ -183,6 +169,13 @@ delegateDatum o f = do
   PlutusTx.fromData d
 
 
+{-# INLINEABLE available #-}
+
+available :: TxOut ->Royalty -> Integer
+available o royalty = assetClassValueOf (txOutValue o) (rToken royalty)
+
+
+
 delegateInst :: Royalty -> Scripts.ScriptInstance Delegating
 delegateInst royalty =
   Scripts.validator @Delegating
@@ -212,25 +205,35 @@ data RoyaltyParams = RoyaltyParams
 createRoyalty :: RoyaltyParams -> Contract (Last Royalty) BlockchainActions Text ()
 createRoyalty rp = do
   pkh <- pubKeyHash <$> Contract.ownPubKey
-  osc <- mapError (pack . show) (forgeContract pkh [(emptyTokenName, 1)] :: Contract (Last Royalty) BlockchainActions CurrencyError OneShotCurrency)
-  let cs = Currency.currencySymbol osc
-      royalty =
-        Royalty
-          { rCreator = pkh,
-            rBeneficiaries = rpBeneficiaries rp,
-            rToken = rpToken rp,
-            rNFT = cs,
-            rDeadline = rpDeadline rp
-          }
+  let beneficiaries = (pkh, rpSelfPercent rp):rpBeneficiaries rp
+  case bSum beneficiaries of 
+    100 ->do
+      osc <- mapError (pack . show) (forgeContract pkh [(emptyTokenName, 1)] :: Contract (Last Royalty) BlockchainActions CurrencyError OneShotCurrency)
+      let cs = Currency.currencySymbol osc
+        
+          royalty =
+            Royalty
+              { rCreator = pkh,
+                rBeneficiaries = rpBeneficiaries rp,
+                rToken = rpToken rp,
+                rNFT = cs,
+                rDeadline = rpDeadline rp
+              }
 
-      val = assetClassValue (rpToken rp) (rpNumToken rp) <> assetClassValue (royaltyAsset royalty) 1
+          val = assetClassValue (rpToken rp) (rpNumToken rp) <> assetClassValue (royaltyAsset royalty) 1
 
-      tx = Constraints.mustPayToTheScript (DelegateDatum $ rpPrice rp) val
-  tell $ Last $ Just royalty
-  ledgerTx <- submitTxConstraints (delegateInst royalty) tx
+          tx = Constraints.mustPayToTheScript (DelegateDatum $ rpPrice rp) val
+      tell $ Last $ Just royalty
+      ledgerTx <- submitTxConstraints (delegateInst royalty) tx
 
-  awaitTxConfirmed $ txId ledgerTx
-  logInfo @String $ show (rpToken rp) ++ " token kept in market place for trade"
+      awaitTxConfirmed $ txId ledgerTx
+      logInfo @String $ show (rpToken rp) ++ " token kept in market place for trade"
+    _-> throwError "Invalid royalty distribution"
+
+  where
+    bSum :: [(PubKeyHash,Integer)] -> Integer
+    bSum b = sum $ fmap snd b
+
 
 -- | It is for searching required UtXo
 findRoyalty :: 
@@ -271,6 +274,37 @@ updateRoyalty royalty cp' = do
       awaitTxConfirmed $ txId ledgerTx
       logInfo @String $ "updated cost price to " ++ show cp'
 
+
+retrieve :: 
+  forall s w. HasBlockchainActions s =>
+  Royalty  -> Integer -> Contract w s Text ()
+retrieve royalty num = do
+  m <- findRoyalty royalty
+  case m of
+    Nothing -> do
+      throwError "No royalty found to retrieve"
+    Just (oref, o, dt) |  (available (txOutTxOut o) royalty) >= num -> do
+      let      
+        av = available (txOutTxOut o) royalty
+        valScr = assetClassValue (rToken royalty) (av-num) <> assetClassValue (royaltyAsset royalty) 1
+       
+
+        lookups = Constraints.unspentOutputs (Map.singleton oref o)         <>
+                  Constraints.scriptInstanceLookups (delegateInst royalty)  <>
+                  Constraints.otherScript (delegateValidator royalty )
+
+        tx      = Constraints.mustSpendScriptOutput oref (Redeemer $ PlutusTx.toData (Retrieve num)) <>
+                  if av /= num then 
+                    Constraints.mustPayToOtherScript (validatorHash $ delegateValidator royalty)
+                    (Datum $ PlutusTx.toData dt) valScr  else
+                    mempty 
+        
+
+      ledgerTx <- submitTxConstraintsWith @Delegating lookups tx
+      awaitTxConfirmed $ txId ledgerTx
+      logInfo @String $ "Retrieved " ++ show num ++ " tokens by creator"
+
+    _ -> throwError "Number of token parameter not valid"
 
 
 
