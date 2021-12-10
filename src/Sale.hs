@@ -192,14 +192,14 @@ data SaleParams = SaleParams {
       spSellingPrice:: !Integer
     , spRoyaltyRate  :: !Integer
     , spNumToken     :: !Integer -- Number of token to sell
-    }
+    } deriving (Show,Generic, FromJSON, ToJSON)
 
 
 
 putOnSale ::
   forall s. HasBlockchainActions s =>
-  (Royalty, SaleParams) -> Contract (Last Sale) s Text ()
-putOnSale (royalty, sp) = do
+  Maybe CurrencySymbol -> (Royalty, SaleParams) -> Contract (Last Sale) s Text ()
+putOnSale mcs (royalty, sp) = do
   m <- findRoyalty royalty
 
   case m of
@@ -208,9 +208,10 @@ putOnSale (royalty, sp) = do
     Just (oref, o, ddt@DelegateDatum{..}) | (available (txOutTxOut o) royalty) >= spNumToken sp -> do
 
       pkh <- pubKeyHash <$> Contract.ownPubKey
-      osc <- mapError (pack . show) (forgeContract pkh [(emptyTokenName, 1)] :: Contract (Last Sale) s CurrencyError OneShotCurrency)
+      cs <- case mcs of 
+        Nothing -> Currency.currencySymbol <$> mapError (pack . show) (forgeContract pkh [(emptyTokenName, 1)] :: Contract (Last Sale) s CurrencyError OneShotCurrency)
+        Just cs' -> return  cs' 
       let
-        cs = Currency.currencySymbol osc
         sale = Sale {
               sSeller      = pkh,
               sRoyaltyRate = spRoyaltyRate sp,
@@ -331,6 +332,8 @@ buy (royalty, sale) num = do
       awaitTxConfirmed $ txId ledgerTx
       logInfo @String $ "bought " ++ show num ++ " tokens"
 
+      logInfo @String $ "Beneficiaries are " ++ show beneficiaries
+
     _ -> throwError "Number of token parameter not valid"  
 
 retrieveSale :: 
@@ -366,12 +369,70 @@ retrieveSale (royalty, sale) num = do
     _ -> throwError "Number of token parameter not valid"
 
 
+type CreateSchema = 
+  BlockchainActions .\/
+  Endpoint "create" RoyaltyParams
+
+type CreateSchema' = 
+  BlockchainActions .\/
+  Endpoint "create" (RoyaltyParams, CurrencySymbol)
+
+
+type DelegateSchema =
+  BlockchainActions .\/
+  Endpoint "update"   Integer .\/ -- Price
+  Endpoint "retrieve" Integer     -- Num of token
+
+
+type CreateSaleSchema = 
+  BlockchainActions .\/
+  Endpoint "putOnSale" SaleParams
+
+type CreateSaleSchema' = 
+  BlockchainActions .\/
+  Endpoint "putOnSale" (SaleParams, CurrencySymbol)
+
 
 type SaleSchema =
   BlockchainActions .\/
   Endpoint "updateSale"   Integer .\/ -- Integer is price
   Endpoint "retrieveSale" Integer .\/ -- Integer is num of token
   Endpoint "buy"          Integer     -- Integer is num of token
+
+cEndpoint :: Contract (Last Royalty) CreateSchema Text ()
+cEndpoint  = createRoyalty' >> cEndpoint
+  where
+    createRoyalty' :: Contract (Last Royalty) CreateSchema Text ()
+    createRoyalty' = handleError logError $ do 
+      rp <- endpoint @"create"
+      createRoyalty Nothing rp
+
+cEndpoint' :: Contract (Last Royalty) CreateSchema' Text ()
+cEndpoint'  = createRoyalty' >> cEndpoint'
+  where
+    createRoyalty' :: Contract (Last Royalty) CreateSchema' Text ()
+    createRoyalty' = handleError logError $ do 
+      (rp, cs) <- endpoint @"create"
+      createRoyalty (Just cs) rp
+
+
+
+pEndpoint :: Royalty -> Contract (Last Sale) CreateSaleSchema Text ()
+pEndpoint royalty = putOnSale' >> pEndpoint royalty 
+  where
+    putOnSale' :: Contract (Last Sale) CreateSaleSchema Text ()
+    putOnSale' = handleError logError $ do
+      sp <- endpoint @"putOnSale"
+      putOnSale Nothing (royalty, sp)
+
+pEndpoint' :: Royalty -> Contract (Last Sale) CreateSaleSchema' Text ()
+pEndpoint' royalty = putOnSale' >> pEndpoint' royalty 
+  where
+    putOnSale' :: Contract (Last Sale) CreateSaleSchema' Text ()
+    putOnSale' = handleError logError $ do
+      (sp, cs) <- endpoint @"putOnSale"
+      putOnSale (Just cs) (royalty, sp)
+
 
 
 dEndpoints :: Royalty -> Contract () DelegateSchema Text ()

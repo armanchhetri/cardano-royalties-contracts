@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE TypeApplications   #-}
 
-module Trace
+module Spec.Trace
   (tests,
   testyTest)
   where
